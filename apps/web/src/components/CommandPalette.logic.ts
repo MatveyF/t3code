@@ -7,6 +7,7 @@ import {
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 import { filterFilesystemBrowseEntries } from "@t3tools/client-runtime/state/filesystem";
+import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
@@ -542,4 +543,60 @@ export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): str
     case "submenu-browse":
       return "Enter path (e.g. ~/projects/my-app)";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Quick thread from the "New thread in…" chooser.
+//
+// Typing a prompt into the project chooser and pressing Enter (when nothing
+// matched, or with the primary modifier held) starts a thread in a scratch
+// project with that prompt already in the composer.
+// ---------------------------------------------------------------------------
+
+export const NEW_THREAD_IN_ITEM_VALUE_PREFIX = "new-thread-in:";
+export const QUICK_THREAD_PROJECT_TITLE = "scratch";
+
+export interface QuickThreadProjectCandidate {
+  readonly environmentId: EnvironmentId;
+  readonly id: ProjectId;
+  readonly title: string;
+}
+
+export function isNewThreadInView(view: CommandPaletteView | null): boolean {
+  return (
+    view?.groups.some((group) =>
+      group.items.some((item) => item.value.startsWith(NEW_THREAD_IN_ITEM_VALUE_PREFIX)),
+    ) ?? false
+  );
+}
+
+export function hasVisibleCommandPaletteItems(groups: ReadonlyArray<CommandPaletteGroup>): boolean {
+  return groups.some((group) => group.items.length > 0);
+}
+
+/**
+ * Where a prompt typed straight into the chooser should land: a project titled
+ * "Scratch" when one exists, otherwise the contextual project, otherwise the
+ * first project offered by the chooser.
+ */
+export function resolveQuickThreadProject<T extends QuickThreadProjectCandidate>(input: {
+  readonly projects: ReadonlyArray<T>;
+  readonly contextualProjectRef: ScopedProjectRef | null;
+}): T | null {
+  const scratch = input.projects.find(
+    (project) => project.title.trim().toLowerCase() === QUICK_THREAD_PROJECT_TITLE,
+  );
+  if (scratch) {
+    return scratch;
+  }
+  const ref = input.contextualProjectRef;
+  if (ref) {
+    const contextual = input.projects.find(
+      (project) => project.environmentId === ref.environmentId && project.id === ref.projectId,
+    );
+    if (contextual) {
+      return contextual;
+    }
+  }
+  return input.projects[0] ?? null;
 }

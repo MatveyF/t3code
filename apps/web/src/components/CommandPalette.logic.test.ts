@@ -10,7 +10,10 @@ import {
   enumerateCommandPaletteItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
+  hasVisibleCommandPaletteItems,
+  isNewThreadInView,
   reduceCommandPaletteUiState,
+  resolveQuickThreadProject,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -737,4 +740,77 @@ it.each([
   expect(groups.flatMap((group) => group.items.map((item) => item.title))).toEqual([
     "Implementation",
   ]);
+});
+
+describe("quick thread from the project chooser", () => {
+  const envA = EnvironmentId.make("env-a");
+  const projects = [
+    { environmentId: envA, id: ProjectId.make("p-work"), title: "Work" },
+    { environmentId: envA, id: ProjectId.make("p-scratch"), title: "  Scratch " },
+    { environmentId: envA, id: ProjectId.make("p-other"), title: "Other" },
+  ] as const;
+
+  it("prefers a project titled Scratch regardless of case and whitespace", () => {
+    expect(
+      resolveQuickThreadProject({
+        projects,
+        contextualProjectRef: { environmentId: envA, projectId: ProjectId.make("p-work") },
+      })?.id,
+    ).toBe("p-scratch");
+  });
+
+  it("falls back to the contextual project, then the first project", () => {
+    const withoutScratch = projects.filter((project) => project.id !== "p-scratch");
+    expect(
+      resolveQuickThreadProject({
+        projects: withoutScratch,
+        contextualProjectRef: { environmentId: envA, projectId: ProjectId.make("p-other") },
+      })?.id,
+    ).toBe("p-other");
+    expect(
+      resolveQuickThreadProject({ projects: withoutScratch, contextualProjectRef: null })?.id,
+    ).toBe("p-work");
+    expect(resolveQuickThreadProject({ projects: [], contextualProjectRef: null })).toBeNull();
+  });
+
+  it("recognises the chooser view by its new-thread-in items", () => {
+    const item = {
+      kind: "action" as const,
+      value: "new-thread-in:env-a:p-work",
+      title: "Work",
+      searchTerms: [],
+      icon: null,
+      run: async () => {},
+    };
+    const view = {
+      addonIcon: null,
+      groups: [{ value: "projects", label: "Projects", items: [item] }],
+    };
+    expect(isNewThreadInView(view)).toBe(true);
+    expect(isNewThreadInView({ ...view, groups: [] })).toBe(false);
+    expect(isNewThreadInView(null)).toBe(false);
+  });
+
+  it("reports whether any group still has visible items", () => {
+    expect(hasVisibleCommandPaletteItems([{ value: "a", label: "A", items: [] }])).toBe(false);
+    expect(
+      hasVisibleCommandPaletteItems([
+        { value: "a", label: "A", items: [] },
+        {
+          value: "b",
+          label: "B",
+          items: [
+            {
+              kind: "action",
+              value: "x",
+              title: "X",
+              searchTerms: [],
+              icon: null,
+              run: async () => {},
+            },
+          ],
+        },
+      ]),
+    ).toBe(true);
+  });
 });
