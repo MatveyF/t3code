@@ -153,11 +153,15 @@ import {
   filterPinnedBrowseEntries,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
+  hasVisibleCommandPaletteItems,
+  isNewThreadInView,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
   reduceCommandPaletteUiState,
+  resolveQuickThreadProject,
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
@@ -940,6 +944,10 @@ function OpenCommandPaletteDialog(props: {
         displayName: group.displayName,
       })),
     [projectPickerEntries],
+  );
+  const quickThreadProject = useMemo(
+    () => resolveQuickThreadProject({ projects: pickerProjects, contextualProjectRef }),
+    [contextualProjectRef, pickerProjects],
   );
   const projectGroupByTargetKey = useMemo(
     () =>
@@ -2586,6 +2594,10 @@ function OpenCommandPaletteDialog(props: {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
 
+  const quickThreadEmptyStateMessage =
+    quickThreadProject !== null && isNewThreadInView(currentView) && query.trim().length > 0
+      ? `No project matched. Press Enter to ask this in ${quickThreadProject.title}.`
+      : null;
   const inputPlaceholder =
     remoteProjectInputPlaceholder(addProjectCloneFlow) ??
     getCommandPaletteInputPlaceholder(paletteMode);
@@ -2707,6 +2719,35 @@ function OpenCommandPaletteDialog(props: {
       } else {
         void handleAddProject(resolvedAddProjectPath);
       }
+      return;
+    }
+
+    const quickThreadPrompt = query.trim();
+    if (
+      event.key === "Enter" &&
+      quickThreadProject !== null &&
+      quickThreadPrompt.length > 0 &&
+      isNewThreadInView(currentView) &&
+      (!hasVisibleCommandPaletteItems(displayedGroups) || isPrimaryModifierPressed(event))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      void handleNewThread(scopeProjectRef(quickThreadProject.environmentId, quickThreadProject.id))
+        .then((draft) => {
+          if (draft) {
+            useComposerDraftStore.getState().setPrompt(draft.draftId, quickThreadPrompt);
+          }
+        })
+        .catch((error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Unable to start thread",
+              description: error instanceof Error ? error.message : "An unexpected error occurred.",
+            }),
+          );
+        });
       return;
     }
 
@@ -3031,9 +3072,11 @@ function OpenCommandPaletteDialog(props: {
                 ? {
                     emptyStateMessage: "Press Enter to create this folder and add it as a project.",
                   }
-                : threadSearch.isPending
-                  ? { emptyStateMessage: "Searching thread messages…" }
-                  : {})}
+                : quickThreadEmptyStateMessage !== null
+                  ? { emptyStateMessage: quickThreadEmptyStateMessage }
+                  : threadSearch.isPending
+                    ? { emptyStateMessage: "Searching thread messages…" }
+                    : {})}
       />
     </CommandPaletteContent>
   );
