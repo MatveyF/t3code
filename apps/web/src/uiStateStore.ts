@@ -19,7 +19,44 @@ const LEGACY_PERSISTED_STATE_KEYS = [
   "codething:renderer-state:v1",
 ] as const;
 
+export const SIDEBAR_FOLDER_ICON_NAMES = [
+  "folder",
+  "star",
+  "briefcase",
+  "flask",
+  "bug",
+  "rocket",
+  "heart",
+  "zap",
+  "book",
+  "home",
+  "users",
+  "code",
+  "sparkles",
+  "target",
+  "inbox",
+] as const;
+export type SidebarFolderIconName = (typeof SIDEBAR_FOLDER_ICON_NAMES)[number];
+
+export function isSidebarFolderIconName(value: unknown): value is SidebarFolderIconName {
+  return (
+    typeof value === "string" && (SIDEBAR_FOLDER_ICON_NAMES as readonly string[]).includes(value)
+  );
+}
+
+/** Fork feature: a user-defined sidebar folder grouping unsettled threads. */
+export interface SidebarThreadFolder {
+  readonly id: string;
+  readonly name: string;
+  /** Scoped thread keys (`<environmentId>:<threadId>`); a thread belongs to at most one folder. */
+  readonly threadKeys: readonly string[];
+  readonly collapsed: boolean;
+  /** Absent means the default folder glyph. */
+  readonly icon?: SidebarFolderIconName;
+}
+
 export interface PersistedUiState {
+  threadFolders?: SidebarThreadFolder[];
   projectExpandedById?: Record<string, boolean>;
   projectOrder?: string[];
   threadLastVisitedAtById?: Record<string, string>;
@@ -55,8 +92,17 @@ export interface UiPullRequestState {
   pullRequestMergeMethod: PullRequestMergeMethod;
 }
 
+export interface UiFolderState {
+  /** Sidebar folders; desktop/web only, stored per device (fork feature). */
+  threadFolders: SidebarThreadFolder[];
+}
+
 export interface UiState
-  extends UiProjectState, UiThreadState, UiEndpointState, UiPullRequestState {}
+  extends UiProjectState,
+    UiThreadState,
+    UiEndpointState,
+    UiPullRequestState,
+    UiFolderState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -66,6 +112,7 @@ const initialState: UiState = {
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
   pullRequestMergeMethod: "merge",
+  threadFolders: [],
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -121,6 +168,36 @@ function isPullRequestMergeMethod(value: unknown): value is PullRequestMergeMeth
   return value === "merge" || value === "squash" || value === "rebase";
 }
 
+function sanitizeThreadFolders(value: unknown): SidebarThreadFolder[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seenIds = new Set<string>();
+  const seenThreadKeys = new Set<string>();
+  const folders: SidebarThreadFolder[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Record<string, unknown>;
+    const id = typeof candidate.id === "string" ? candidate.id : "";
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+    if (id.length === 0 || name.length === 0 || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const threadKeys = sanitizeStringArray(candidate.threadKeys).filter((key) => {
+      if (seenThreadKeys.has(key)) return false;
+      seenThreadKeys.add(key);
+      return true;
+    });
+    folders.push({
+      id,
+      name,
+      threadKeys,
+      collapsed: candidate.collapsed === true,
+      ...(isSidebarFolderIconName(candidate.icon) ? { icon: candidate.icon } : {}),
+    });
+  }
+  return folders;
+}
+
 export function parsePersistedState(parsed: PersistedUiState): UiState {
   const projectExpandedById =
     parsed.projectExpandedById === undefined
@@ -158,6 +235,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     pullRequestMergeMethod: isPullRequestMergeMethod(parsed.pullRequestMergeMethod)
       ? parsed.pullRequestMergeMethod
       : initialState.pullRequestMergeMethod,
+    threadFolders: sanitizeThreadFolders(parsed.threadFolders),
   };
 }
 
@@ -232,6 +310,7 @@ export function persistState(state: UiState): void {
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
         pullRequestMergeMethod: state.pullRequestMergeMethod,
+        threadFolders: state.threadFolders,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -423,6 +502,131 @@ export function reorderProjects(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sidebar thread folders (fork feature)
+// ---------------------------------------------------------------------------
+
+export function findThreadFolderId(
+  folders: readonly SidebarThreadFolder[],
+  threadKey: string,
+): string | null {
+  for (const folder of folders) {
+    if (folder.threadKeys.includes(threadKey)) return folder.id;
+  }
+  return null;
+}
+
+export function createThreadFolder(
+  state: UiState,
+  folder: { readonly id: string; readonly name: string },
+  initialThreadKey?: string,
+): UiState {
+  const name = folder.name.trim();
+  if (folder.id.length === 0 || name.length === 0) return state;
+  if (state.threadFolders.some((existing) => existing.id === folder.id)) return state;
+  const withoutThread = initialThreadKey
+    ? removeThreadKeyFromFolders(state.threadFolders, initialThreadKey)
+    : state.threadFolders;
+  return {
+    ...state,
+    threadFolders: [
+      ...withoutThread,
+      {
+        id: folder.id,
+        name,
+        threadKeys: initialThreadKey ? [initialThreadKey] : [],
+        collapsed: false,
+      },
+    ],
+  };
+}
+
+export function renameThreadFolder(state: UiState, folderId: string, name: string): UiState {
+  const nextName = name.trim();
+  if (nextName.length === 0) return state;
+  const index = state.threadFolders.findIndex((folder) => folder.id === folderId);
+  if (index < 0 || state.threadFolders[index]!.name === nextName) return state;
+  const threadFolders = [...state.threadFolders];
+  threadFolders[index] = { ...threadFolders[index]!, name: nextName };
+  return { ...state, threadFolders };
+}
+
+export function deleteThreadFolder(state: UiState, folderId: string): UiState {
+  if (!state.threadFolders.some((folder) => folder.id === folderId)) return state;
+  return {
+    ...state,
+    threadFolders: state.threadFolders.filter((folder) => folder.id !== folderId),
+  };
+}
+
+export function setThreadFolderCollapsed(
+  state: UiState,
+  folderId: string,
+  collapsed: boolean,
+): UiState {
+  const index = state.threadFolders.findIndex((folder) => folder.id === folderId);
+  if (index < 0 || state.threadFolders[index]!.collapsed === collapsed) return state;
+  const threadFolders = [...state.threadFolders];
+  threadFolders[index] = { ...threadFolders[index]!, collapsed };
+  return { ...state, threadFolders };
+}
+
+function removeThreadKeyFromFolders(
+  folders: readonly SidebarThreadFolder[],
+  threadKey: string,
+): SidebarThreadFolder[] {
+  return folders.map((folder) =>
+    folder.threadKeys.includes(threadKey)
+      ? { ...folder, threadKeys: folder.threadKeys.filter((key) => key !== threadKey) }
+      : folder,
+  );
+}
+
+/** Move a thread into `folderId`, or out of every folder when `folderId` is null. */
+export function moveThreadToFolder(
+  state: UiState,
+  threadKey: string,
+  folderId: string | null,
+): UiState {
+  if (threadKey.length === 0) return state;
+  if (findThreadFolderId(state.threadFolders, threadKey) === folderId) return state;
+  if (folderId !== null && !state.threadFolders.some((folder) => folder.id === folderId)) {
+    return state;
+  }
+  const threadFolders = removeThreadKeyFromFolders(state.threadFolders, threadKey).map((folder) =>
+    folder.id === folderId ? { ...folder, threadKeys: [...folder.threadKeys, threadKey] } : folder,
+  );
+  return { ...state, threadFolders };
+}
+
+/** Manual reorder of folders: drop `folderId` at `targetFolderId`'s slot. */
+export function reorderThreadFolder(
+  state: UiState,
+  folderId: string,
+  targetFolderId: string,
+): UiState {
+  if (folderId === targetFolderId) return state;
+  const from = state.threadFolders.findIndex((folder) => folder.id === folderId);
+  const to = state.threadFolders.findIndex((folder) => folder.id === targetFolderId);
+  if (from < 0 || to < 0) return state;
+  const threadFolders = [...state.threadFolders];
+  threadFolders.splice(to, 0, threadFolders.splice(from, 1)[0]!);
+  return { ...state, threadFolders };
+}
+
+export function setThreadFolderIcon(
+  state: UiState,
+  folderId: string,
+  icon: SidebarFolderIconName,
+): UiState {
+  const index = state.threadFolders.findIndex((folder) => folder.id === folderId);
+  if (index < 0 || (state.threadFolders[index]!.icon ?? "folder") === icon) return state;
+  const threadFolders = [...state.threadFolders];
+  const { icon: _previous, ...rest } = threadFolders[index]!;
+  threadFolders[index] = icon === "folder" ? rest : { ...rest, icon };
+  return { ...state, threadFolders };
+}
+
 interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
@@ -436,6 +640,16 @@ interface UiStateStore extends UiState {
     draggedProjectIds: readonly string[],
     targetProjectIds: readonly string[],
   ) => void;
+  createThreadFolder: (
+    folder: { readonly id: string; readonly name: string },
+    initialThreadKey?: string,
+  ) => void;
+  renameThreadFolder: (folderId: string, name: string) => void;
+  deleteThreadFolder: (folderId: string) => void;
+  setThreadFolderCollapsed: (folderId: string, collapsed: boolean) => void;
+  moveThreadToFolder: (threadKey: string, folderId: string | null) => void;
+  reorderThreadFolder: (folderId: string, targetFolderId: string) => void;
+  setThreadFolderIcon: (folderId: string, icon: SidebarFolderIconName) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
@@ -457,6 +671,18 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) =>
       reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),
     ),
+  createThreadFolder: (folder, initialThreadKey) =>
+    set((state) => createThreadFolder(state, folder, initialThreadKey)),
+  renameThreadFolder: (folderId, name) => set((state) => renameThreadFolder(state, folderId, name)),
+  deleteThreadFolder: (folderId) => set((state) => deleteThreadFolder(state, folderId)),
+  setThreadFolderCollapsed: (folderId, collapsed) =>
+    set((state) => setThreadFolderCollapsed(state, folderId, collapsed)),
+  moveThreadToFolder: (threadKey, folderId) =>
+    set((state) => moveThreadToFolder(state, threadKey, folderId)),
+  reorderThreadFolder: (folderId, targetFolderId) =>
+    set((state) => reorderThreadFolder(state, folderId, targetFolderId)),
+  setThreadFolderIcon: (folderId, icon) =>
+    set((state) => setThreadFolderIcon(state, folderId, icon)),
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));

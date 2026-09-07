@@ -1,6 +1,8 @@
 import { closestCenter, type CollisionDetection, type Modifier } from "@dnd-kit/core";
 import { verticalListSortingStrategy, type SortingStrategy } from "@dnd-kit/sortable";
 import {
+  folderHeaderMarker,
+  resolveSidebarDropFolder,
   resolveSidebarDropTarget,
   sidebarListItemId,
   sidebarMarkerId,
@@ -8,6 +10,7 @@ import {
   type SidebarListMarker,
   type SidebarSection,
 } from "./Sidebar.logic";
+import { findThreadFolderId, type SidebarThreadFolder } from "../uiStateStore";
 
 const stationary = { x: 0, y: 0, scaleX: 1, scaleY: 1 };
 const hidden = { ...stationary, scaleY: 0 };
@@ -106,6 +109,9 @@ export function createSidebarSortingStrategy(input: {
   /** Space each pinned boundary opens for its label while dragging. The
    * markers stay zero height at rest, so nothing is reserved until pickup. */
   boundaryLabelHeight?: number;
+  /** Fork: folders grouping the active section; the preview keeps rows under
+   * their headers and files the lifted row by where it lands. */
+  folders?: readonly SidebarThreadFolder[];
 }): SortingStrategy {
   const { items } = input;
   const indices = new Map(items.map((item, index) => [sidebarListItemId(item), index]));
@@ -179,7 +185,26 @@ export function createSidebarSortingStrategy(input: {
     marker("pinned-header");
     projected.push(...groups.pinned);
     marker("pinned-divider");
-    section("active");
+    const folders = input.folders ?? [];
+    if (folders.length === 0 || groups.active.length === 0) {
+      section("active");
+    } else {
+      const dropFolder =
+        target.section === "active"
+          ? resolveSidebarDropFolder(items, active.key, sidebarListItemId(over))
+          : null;
+      const folderOf = (key: string) =>
+        key === active.key && target.section === "active"
+          ? dropFolder
+          : findThreadFolderId(folders, key);
+      for (const folder of folders) {
+        marker(folderHeaderMarker(folder.id));
+        if (folder.collapsed) continue;
+        projected.push(...groups.active.filter((item) => folderOf(item.key) === folder.id));
+      }
+      marker("unfiled-divider");
+      projected.push(...groups.active.filter((item) => folderOf(item.key) === null));
+    }
     if (
       groups.snoozed.length > 0 ||
       ((active.section !== "snoozed" || (input.snoozedThreadCount ?? 0) > 1) &&
