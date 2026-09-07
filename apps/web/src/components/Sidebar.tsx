@@ -71,6 +71,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  createElement,
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 
@@ -109,7 +110,13 @@ import {
   projectGroupsSpanEnvironments,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
+import {
+  legacyProjectCwdPreferenceKey,
+  SIDEBAR_FOLDER_ICON_NAMES,
+  type SidebarThreadFolder,
+  useUiStateStore,
+} from "../uiStateStore";
+import { resolveSidebarFolderIcon, SIDEBAR_FOLDER_ICONS } from "./sidebarFolderIcons";
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -179,6 +186,12 @@ import {
   useRetainedValue,
   useSidebarRowSubscriptionLease,
   useThreadJumpHintVisibility,
+  folderHeaderMarker,
+  groupSidebarThreadsIntoFolders,
+  parseFolderHeaderMarker,
+  resolveSidebarDropFolder,
+  THREAD_FOLDER_MENU_ID_PREFIX,
+  withThreadFolderMenuItems,
   type SidebarListItem,
   type SidebarListMarker,
   type SidebarSection,
@@ -683,6 +696,107 @@ function SidebarSectionHeader(props: {
         {content}
       </button>
     </SortableSidebarMarker>
+  );
+}
+
+// Fork: a folder header inside the active section. It is a non-draggable
+// sortable marker so rows slide around it during a drag, and dropping on it
+// files the lifted row into this folder (see resolveSidebarDropFolder).
+function SidebarFolderHeader(props: {
+  folder: SidebarThreadFolder;
+  count: number;
+  dragging: boolean;
+  isRenaming: boolean;
+  renamingName: string;
+  onToggle: () => void;
+  onBeginRename: () => void;
+  onRenameChange: (name: string) => void;
+  onCommitRename: () => void;
+  onCancelRename: () => void;
+  onContextMenu: (position: { x: number; y: number }) => void;
+}) {
+  const { folder, count, isRenaming } = props;
+  return (
+    <SortableSidebarMarker
+      marker={folderHeaderMarker(folder.id)}
+      data-testid={`sidebar-folder-${folder.id}`}
+      className="mx-0.5 h-8"
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!folder.collapsed}
+        data-testid="sidebar-folder-toggle"
+        onClick={() => {
+          if (!isRenaming) props.onToggle();
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          props.onBeginRename();
+        }}
+        onKeyDown={(event) => {
+          if (isRenaming) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            props.onToggle();
+          }
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          props.onContextMenu({ x: event.clientX, y: event.clientY });
+        }}
+        className={cn(
+          "flex h-full w-full cursor-pointer items-center gap-2 px-2 text-left text-xs font-medium text-sidebar-muted-foreground/80",
+          props.dragging && "text-sidebar-foreground/80",
+        )}
+      >
+        {createElement(resolveSidebarFolderIcon(folder.icon), {
+          "aria-hidden": true,
+          className: "size-3 shrink-0",
+        })}
+        {isRenaming ? (
+          <input
+            autoFocus
+            value={props.renamingName}
+            aria-label="Folder name"
+            onChange={(event) => props.onRenameChange(event.target.value)}
+            onFocus={(event) => event.currentTarget.select()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                props.onCommitRename();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                props.onCancelRename();
+              }
+            }}
+            onBlur={props.onCommitRename}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            className="min-w-0 flex-1 rounded-sm border border-input bg-card px-1 text-xs font-medium text-card-foreground outline-none focus:border-foreground"
+          />
+        ) : (
+          <span className="truncate">
+            {folder.collapsed || count === 0 ? `${folder.name} (${count})` : folder.name}
+          </span>
+        )}
+        <span aria-hidden className="h-px min-w-2 flex-1 bg-sidebar-border/60" />
+        <ChevronDownIcon
+          aria-hidden
+          className={cn("size-3 shrink-0 transition-transform", !folder.collapsed && "rotate-180")}
+        />
+      </div>
+    </SortableSidebarMarker>
+  );
+}
+
+function SidebarUnfiledDivider() {
+  return (
+    <SortableSidebarMarker
+      marker="unfiled-divider"
+      data-testid="sidebar-unfiled-divider"
+      className="mx-2.5 my-1.5 h-px bg-sidebar-border/60"
+    />
   );
 }
 
@@ -2599,6 +2713,119 @@ export default function Sidebar() {
     };
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
+  // --- Sidebar folders (fork feature): client-side grouping of the active section.
+  const threadFolders = useUiStateStore((s) => s.threadFolders);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renamingFolderName, setRenamingFolderName] = useState("");
+  const beginFolderRename = useCallback((folderId: string, name: string) => {
+    setRenamingFolderId(folderId);
+    setRenamingFolderName(name);
+  }, []);
+  const commitFolderRename = useCallback(() => {
+    if (renamingFolderId !== null) {
+      useUiStateStore.getState().renameThreadFolder(renamingFolderId, renamingFolderName);
+    }
+    setRenamingFolderId(null);
+  }, [renamingFolderId, renamingFolderName]);
+  const cancelFolderRename = useCallback(() => setRenamingFolderId(null), []);
+  const createFolderAndRename = useCallback(
+    (initialThreadKey?: string) => {
+      const folderId = `folder-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      useUiStateStore
+        .getState()
+        .createThreadFolder({ id: folderId, name: "New folder" }, initialThreadKey);
+      beginFolderRename(folderId, "New folder");
+    },
+    [beginFolderRename],
+  );
+  const handleFolderContextMenu = useCallback(
+    (folderId: string, position: { x: number; y: number }) => {
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+        const folders = useUiStateStore.getState().threadFolders;
+        const folderIndex = folders.findIndex((candidate) => candidate.id === folderId);
+        const folder = folders[folderIndex];
+        if (!folder) return;
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show(
+            [
+              { id: "rename", label: "Rename folder", icon: "pencil" },
+              {
+                id: "icon",
+                label: "Change icon",
+                icon: "folder",
+                children: SIDEBAR_FOLDER_ICON_NAMES.map((name) => ({
+                  id: `icon:${name}`,
+                  label: SIDEBAR_FOLDER_ICONS[name].label,
+                  disabled: (folder.icon ?? "folder") === name,
+                })),
+              },
+              { id: "new", label: "New folder", icon: "folder-plus" },
+              {
+                id: "move-up",
+                label: "Move up",
+                icon: "arrow-up",
+                separatorBefore: true,
+                disabled: folderIndex <= 0,
+              },
+              {
+                id: "move-down",
+                label: "Move down",
+                icon: "arrow-down",
+                disabled: folderIndex < 0 || folderIndex >= folders.length - 1,
+              },
+              {
+                id: "delete",
+                label: "Delete folder",
+                icon: "trash",
+                destructive: true,
+                separatorBefore: true,
+              },
+            ],
+            position,
+          ),
+        );
+        if (clicked._tag === "Failure") return;
+        if (clicked.value?.startsWith("icon:")) {
+          const iconName = SIDEBAR_FOLDER_ICON_NAMES.find(
+            (name) => `icon:${name}` === clicked.value,
+          );
+          if (iconName) useUiStateStore.getState().setThreadFolderIcon(folder.id, iconName);
+          return;
+        }
+        switch (clicked.value) {
+          case "rename":
+            beginFolderRename(folder.id, folder.name);
+            return;
+          case "new":
+            createFolderAndRename();
+            return;
+          case "move-up": {
+            const above = folders[folderIndex - 1];
+            if (above) useUiStateStore.getState().reorderThreadFolder(folder.id, above.id);
+            return;
+          }
+          case "move-down": {
+            const below = folders[folderIndex + 1];
+            if (below) useUiStateStore.getState().reorderThreadFolder(folder.id, below.id);
+            return;
+          }
+          case "delete":
+            useUiStateStore.getState().deleteThreadFolder(folder.id);
+            return;
+          default:
+            return;
+        }
+      })();
+    },
+    [beginFolderRename, createFolderAndRename],
+  );
+  const { folderGroups, unfolderedActiveThreads } = useMemo(
+    () => groupSidebarThreadsIntoFolders({ folders: threadFolders, activeThreads }),
+    [activeThreads, threadFolders],
+  );
+
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
@@ -2722,7 +2949,24 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeThreadKey, snoozedShelfExpanded, snoozedThreads]);
 
-  const orderedThreads = useMemo(
+  // Rendered order, top to bottom: pinned, expanded folders, the unfiled
+  // active rows, snoozed, settled. Threads inside a collapsed folder are not
+  // on screen, so they get no jump shortcut and traversal skips them.
+  const orderedThreads = useMemo(() => {
+    const ordered: EnvironmentThreadShell[] = [...pinnedThreads];
+    for (const group of folderGroups) {
+      if (!group.folder.collapsed) ordered.push(...group.threads);
+    }
+    ordered.push(...unfolderedActiveThreads, ...visibleSnoozedThreads, ...renderedSettledThreads);
+    return ordered;
+  }, [
+    folderGroups,
+    pinnedThreads,
+    renderedSettledThreads,
+    unfolderedActiveThreads,
+    visibleSnoozedThreads,
+  ]);
+  const allListedThreads = useMemo(
     () => [...pinnedThreads, ...activeThreads, ...visibleSnoozedThreads, ...renderedSettledThreads],
     [pinnedThreads, activeThreads, visibleSnoozedThreads, renderedSettledThreads],
   );
@@ -2742,12 +2986,12 @@ export default function Sidebar() {
   const threadByKey = useMemo(
     () =>
       new Map(
-        orderedThreads.map(
+        allListedThreads.map(
           (thread) =>
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
-    [orderedThreads],
+    [allListedThreads],
   );
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
@@ -3319,9 +3563,20 @@ export default function Sidebar() {
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
+    if (folderGroups.length === 0) {
+      items.push(...rowsOf(activeThreads, "active"));
+    } else {
+      // Folders first, each header followed by its rows unless collapsed,
+      // then a divider and the unfiled rows. The flattened order is what
+      // the drop planner writes back as the active manual order.
+      for (const group of folderGroups) {
+        items.push({ kind: "marker", marker: folderHeaderMarker(group.folder.id) });
+        if (!group.folder.collapsed) items.push(...rowsOf(group.threads, "active"));
+      }
+      items.push({ kind: "marker", marker: "unfiled-divider" });
+      items.push(...rowsOf(unfolderedActiveThreads, "active"));
+    }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
@@ -3333,10 +3588,12 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
+    folderGroups,
     pinnedThreads,
     renderedSettledThreads,
     settledThreads.length,
     snoozedThreads.length,
+    unfolderedActiveThreads,
     visibleSnoozedThreads,
   ]);
   useEffect(() => {
@@ -3402,6 +3659,7 @@ export default function Sidebar() {
     () =>
       createSidebarSortingStrategy({
         items: sidebarListItems,
+        folders: threadFolders,
         boundaryLabelHeight: SIDEBAR_DRAG_LABEL_HEIGHT,
         settledOrder: draggedSettledOrder,
         settledExpanded: settledShelfExpanded,
@@ -3416,6 +3674,7 @@ export default function Sidebar() {
       settledVisibleCount,
       sidebarListItems,
       snoozedThreads.length,
+      threadFolders,
     ],
   );
   // Hidden and filtered threads keep their keys. Reserve those slots without
@@ -3515,6 +3774,16 @@ export default function Sidebar() {
         activeReorderableKeys: activeReorderableThreadKeys,
       });
       if (plan.kind === "none") return;
+      // Fork: a drop inside the active section also files the row under the
+      // folder header it landed beneath (or on), or unfiles it past the divider.
+      if (target.section === "active" && event.over !== null) {
+        useUiStateStore
+          .getState()
+          .moveThreadToFolder(
+            activeKey,
+            resolveSidebarDropFolder(sidebarListItems, activeKey, String(event.over.id)),
+          );
+      }
       if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
       const assignments =
         plan.kind === "pin"
@@ -3996,27 +4265,41 @@ export default function Sidebar() {
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              branch: thread.branch ?? null,
-              isPinned,
-              isSettled,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning:
-                thread.session?.status === "running" && thread.session.activeTurnId != null,
-              supports: {
-                settlement: supportsSettlement,
-                snooze: supportsSnooze,
-                pinning: supportsPinning,
-                titleRegeneration: supportsTitleRegeneration,
-              },
-              snoozePresets,
-            }),
+            withThreadFolderMenuItems(
+              buildThreadActionMenuItems({
+                branch: thread.branch ?? null,
+                isPinned,
+                isSettled,
+                isSnoozed,
+                canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+                isRegeneratingTitle,
+                isRunning:
+                  thread.session?.status === "running" && thread.session.activeTurnId != null,
+                supports: {
+                  settlement: supportsSettlement,
+                  snooze: supportsSnooze,
+                  pinning: supportsPinning,
+                  titleRegeneration: supportsTitleRegeneration,
+                },
+                snoozePresets,
+              }),
+              { folders: useUiStateStore.getState().threadFolders, threadKey },
+            ),
             position,
           ),
         );
         if (clicked._tag === "Failure") return;
+        if (clicked.value?.startsWith(THREAD_FOLDER_MENU_ID_PREFIX)) {
+          const folderAction = clicked.value.slice(THREAD_FOLDER_MENU_ID_PREFIX.length);
+          if (folderAction === "new") {
+            createFolderAndRename(threadKey);
+            return;
+          }
+          useUiStateStore
+            .getState()
+            .moveThreadToFolder(threadKey, folderAction === "remove" ? null : folderAction);
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset = snoozePresets.find(
             (candidate) => `snooze:${candidate.id}` === clicked.value,
@@ -4193,6 +4476,7 @@ export default function Sidebar() {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
+      createFolderAndRename,
       handleMultiSelectContextMenu,
       markThreadUnread,
       openProjectSettings,
@@ -4711,6 +4995,41 @@ export default function Sidebar() {
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          continue;
+                        }
+                        const folderId = parseFolderHeaderMarker(item.marker);
+                        if (folderId !== null) {
+                          const group = folderGroups.find(
+                            (candidate) => candidate.folder.id === folderId,
+                          );
+                          if (group) {
+                            items.push(
+                              <SidebarFolderHeader
+                                key={`folder-header:${folderId}`}
+                                folder={group.folder}
+                                count={group.threads.length}
+                                dragging={from !== null}
+                                isRenaming={renamingFolderId === folderId}
+                                renamingName={renamingFolderName}
+                                onToggle={() =>
+                                  useUiStateStore
+                                    .getState()
+                                    .setThreadFolderCollapsed(folderId, !group.folder.collapsed)
+                                }
+                                onBeginRename={() => beginFolderRename(folderId, group.folder.name)}
+                                onRenameChange={setRenamingFolderName}
+                                onCommitRename={commitFolderRename}
+                                onCancelRename={cancelFolderRename}
+                                onContextMenu={(position) =>
+                                  handleFolderContextMenu(folderId, position)
+                                }
+                              />,
+                            );
+                          }
+                          continue;
+                        }
+                        if (item.marker === "unfiled-divider") {
+                          items.push(<SidebarUnfiledDivider key="unfiled-divider" />);
                           continue;
                         }
                         switch (item.marker) {

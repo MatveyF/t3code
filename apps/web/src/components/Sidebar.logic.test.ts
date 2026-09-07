@@ -49,6 +49,10 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  folderHeaderMarker,
+  groupSidebarThreadsIntoFolders,
+  resolveSidebarDropFolder,
+  withThreadFolderMenuItems,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -2498,5 +2502,75 @@ describe("resolveSidebarDropVerb", () => {
     expect(resolveSidebarDropVerb("pinned", "pinned")).toBeNull();
     expect(resolveSidebarDropVerb("active", null)).toBeNull();
     expect(resolveSidebarDropVerb("active", "snoozed")).toBeNull();
+  });
+});
+
+describe("sidebar thread folders", () => {
+  const t = (id: string) => ({ environmentId: "env", id });
+  const folders = [
+    { id: "f1", name: "One", threadKeys: ["env:a2", "env:pinned"], collapsed: false },
+    { id: "f2", name: "Two", threadKeys: ["env:a3"], collapsed: true },
+    { id: "f3", name: "Empty", threadKeys: ["env:settled"], collapsed: false },
+  ];
+
+  it("groups active threads by folder in their given order, keeping the rest flat", () => {
+    const result = groupSidebarThreadsIntoFolders({
+      folders,
+      activeThreads: [t("a1"), t("a2"), t("a3"), t("a4")],
+    });
+    expect(result.folderGroups.map((g) => [g.folder.id, g.threads.map((x) => x.id)])).toEqual([
+      ["f1", ["a2"]],
+      ["f2", ["a3"]],
+      ["f3", []],
+    ]);
+    expect(result.unfolderedActiveThreads.map((x) => x.id)).toEqual(["a1", "a4"]);
+  });
+
+  it("resolves the drop folder from the header a row lands under, or on", () => {
+    const items = [
+      { kind: "marker", marker: "pinned-header" },
+      { kind: "thread", key: "env:p1", section: "pinned" },
+      { kind: "marker", marker: "pinned-divider" },
+      { kind: "marker", marker: "active-placeholder" },
+      { kind: "marker", marker: folderHeaderMarker("f1") },
+      { kind: "thread", key: "env:a2", section: "active" },
+      { kind: "marker", marker: folderHeaderMarker("f2") },
+      { kind: "marker", marker: "unfiled-divider" },
+      { kind: "thread", key: "env:a1", section: "active" },
+      { kind: "thread", key: "env:a4", section: "active" },
+      { kind: "marker", marker: "settled-header" },
+    ] as const;
+    // Lift a1 (unfiled) onto a2's slot: it lands under f1's header.
+    expect(resolveSidebarDropFolder(items, "env:a1", "env:a2")).toBe("f1");
+    // Dropped directly on f2's header: joins f2 even though it is collapsed.
+    expect(
+      resolveSidebarDropFolder(items, "env:a1", sidebarMarkerId(folderHeaderMarker("f2"))),
+    ).toBe("f2");
+    // a2 dragged down onto a4's slot: below the divider, so it leaves its folder.
+    expect(resolveSidebarDropFolder(items, "env:a2", "env:a4")).toBeNull();
+    // Onto the pinned row: no folder involvement.
+    expect(resolveSidebarDropFolder(items, "env:a1", "env:p1")).toBeNull();
+    expect(resolveSidebarDropFolder(items, "env:missing", "env:a2")).toBeNull();
+  });
+
+  it("inserts a folder submenu above Rename with the current folder marked", () => {
+    const base = [
+      { id: "pin", label: "Pin thread" },
+      { id: "rename", label: "Rename thread" },
+      { id: "delete", label: "Delete" },
+    ];
+    const items = withThreadFolderMenuItems(base, { folders, threadKey: "env:a2" });
+    expect(items.map((item) => item.id)).toEqual(["pin", "folder", "rename", "delete"]);
+    expect(items[1]?.label).toBe("Folder");
+    expect(items[1]?.children?.map((child) => [child.id, child.disabled ?? false])).toEqual([
+      ["folder:f1", true],
+      ["folder:f2", false],
+      ["folder:f3", false],
+      ["folder:new", false],
+      ["folder:remove", false],
+    ]);
+    const outside = withThreadFolderMenuItems(base, { folders: [], threadKey: "env:x" });
+    expect(outside[1]?.label).toBe("Move to folder");
+    expect(outside[1]?.children?.map((child) => child.id)).toEqual(["folder:new"]);
   });
 });

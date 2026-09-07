@@ -16,6 +16,15 @@ import {
   setSidebarProjectScopeKey,
   setThreadChangedFilesExpanded,
   type UiState,
+  createThreadFolder,
+  deleteThreadFolder,
+  findThreadFolderId,
+  moveThreadToFolder,
+  renameThreadFolder,
+  reorderThreadFolder,
+  setThreadFolderCollapsed,
+  setThreadFolderIcon,
+  type SidebarThreadFolder,
 } from "./uiStateStore";
 
 function makeUiState(overrides: Partial<UiState> = {}): UiState {
@@ -25,6 +34,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     sidebarProjectScopeKey: null,
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    threadFolders: [],
     defaultAdvertisedEndpointKey: null,
     pullRequestMergeMethod: "merge",
     ...overrides,
@@ -183,6 +193,7 @@ describe("parsePersistedState", () => {
         invalid: "not-a-date",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadFolders: [],
       threadChangedFilesExpansionVersion: 2,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -201,6 +212,7 @@ describe("parsePersistedState", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadFolders: [],
       sidebarProjectScopeKey: null,
       pullRequestMergeMethod: "merge",
       threadChangedFilesExpandedById: {
@@ -307,6 +319,7 @@ describe("uiStateStore persistence", () => {
         },
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadFolders: [],
     });
 
     persistState(state);
@@ -323,6 +336,7 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadFolders: [],
       sidebarProjectScopeKey: null,
       threadChangedFilesExpansionVersion: 2,
       threadChangedFilesExpandedById: {
@@ -361,5 +375,81 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
+  });
+});
+
+describe("sidebar thread folders", () => {
+  it("creates a folder, optionally seeding it with a thread pulled from its old folder", () => {
+    let state = createThreadFolder(makeUiState(), { id: "a", name: "  Work  " }, "env:t1");
+    expect(state.threadFolders).toEqual([
+      { id: "a", name: "Work", threadKeys: ["env:t1"], collapsed: false },
+    ]);
+    state = createThreadFolder(state, { id: "b", name: "Side" }, "env:t1");
+    expect(state.threadFolders.map((f) => [f.id, f.threadKeys])).toEqual([
+      ["a", []],
+      ["b", ["env:t1"]],
+    ]);
+    expect(createThreadFolder(state, { id: "a", name: "Again" })).toBe(state);
+    expect(createThreadFolder(state, { id: "c", name: "   " })).toBe(state);
+  });
+
+  it("moves a thread between folders and out of every folder", () => {
+    let state = createThreadFolder(makeUiState(), { id: "a", name: "A" });
+    state = createThreadFolder(state, { id: "b", name: "B" });
+    state = moveThreadToFolder(state, "env:t1", "a");
+    expect(findThreadFolderId(state.threadFolders, "env:t1")).toBe("a");
+    state = moveThreadToFolder(state, "env:t1", "b");
+    expect(state.threadFolders.map((f) => f.threadKeys)).toEqual([[], ["env:t1"]]);
+    expect(moveThreadToFolder(state, "env:t1", "b")).toBe(state);
+    expect(moveThreadToFolder(state, "env:t1", "missing")).toBe(state);
+    state = moveThreadToFolder(state, "env:t1", null);
+    expect(findThreadFolderId(state.threadFolders, "env:t1")).toBeNull();
+  });
+
+  it("renames, collapses, reorders, and deletes folders", () => {
+    let state = createThreadFolder(makeUiState(), { id: "a", name: "A" }, "env:t1");
+    state = renameThreadFolder(state, "a", " Renamed ");
+    expect(state.threadFolders[0]?.name).toBe("Renamed");
+    expect(renameThreadFolder(state, "a", "   ")).toBe(state);
+    state = setThreadFolderCollapsed(state, "a", true);
+    expect(state.threadFolders[0]?.collapsed).toBe(true);
+    expect(setThreadFolderCollapsed(state, "a", true)).toBe(state);
+    state = createThreadFolder(state, { id: "b", name: "B" });
+    state = createThreadFolder(state, { id: "c", name: "C" });
+    state = reorderThreadFolder(state, "c", "a");
+    expect(state.threadFolders.map((f) => f.id)).toEqual(["c", "a", "b"]);
+    expect(reorderThreadFolder(state, "a", "a")).toBe(state);
+    state = deleteThreadFolder(state, "a");
+    expect(state.threadFolders.map((f) => f.id)).toEqual(["c", "b"]);
+    expect(deleteThreadFolder(state, "a")).toBe(state);
+  });
+
+  it("sets and clears a folder icon and round-trips folders through persistence", () => {
+    let state = createThreadFolder(makeUiState(), { id: "a", name: "A" });
+    state = setThreadFolderIcon(state, "a", "rocket");
+    expect(state.threadFolders[0]?.icon).toBe("rocket");
+    expect(setThreadFolderIcon(state, "a", "rocket")).toBe(state);
+    state = setThreadFolderIcon(state, "a", "folder");
+    expect(state.threadFolders[0]).toEqual({
+      id: "a",
+      name: "A",
+      threadKeys: [],
+      collapsed: false,
+    });
+    const parsed = parsePersistedState({
+      threadFolders: [
+        { id: "a", name: "A", threadKeys: ["env:t1", "env:t1", ""], collapsed: true, icon: "bug" },
+        { id: "b", name: "B", threadKeys: ["env:t1", "env:t2"], icon: "not-an-icon" },
+        { id: "a", name: "dup" },
+        { id: "", name: "no id" },
+        { id: "c", name: "   " },
+        "junk",
+      ] as unknown as SidebarThreadFolder[],
+    });
+    expect(parsed.threadFolders).toEqual([
+      { id: "a", name: "A", threadKeys: ["env:t1"], collapsed: true, icon: "bug" },
+      { id: "b", name: "B", threadKeys: ["env:t2"], collapsed: false },
+    ]);
+    expect(parsePersistedState({}).threadFolders).toEqual([]);
   });
 });

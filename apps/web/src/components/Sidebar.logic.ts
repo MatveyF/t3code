@@ -20,6 +20,7 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
+import { findThreadFolderId, type SidebarThreadFolder } from "../uiStateStore";
 
 const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
@@ -108,7 +109,11 @@ export type SidebarListMarker =
   /** The boundary between pinned and active rows. */
   | "pinned-divider"
   | "snoozed-header"
-  | "settled-header";
+  | "settled-header"
+  /** Fork: a folder header inside the active section, and the line between
+      the last folder and the unfiled rows. */
+  | `folder-header-${string}`
+  | "unfiled-divider";
 
 export function sidebarMarkerId(marker: SidebarListMarker): string {
   return `${SIDEBAR_MARKER_PREFIX}${marker}`;
@@ -1230,4 +1235,134 @@ export function sortScopedProjectsForSidebar<
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar thread folders (fork feature)
+//
+// Folders group unsettled threads inside the active section. Membership is
+// client-side; the order inside a folder is the server's active order, so a
+// drop both re-files the row (by the header it lands under) and writes the
+// same manual order upstream uses for the flat list.
+// ---------------------------------------------------------------------------
+
+const FOLDER_HEADER_MARKER_PREFIX = "folder-header-";
+
+export function folderHeaderMarker(folderId: string): `folder-header-${string}` {
+  return `${FOLDER_HEADER_MARKER_PREFIX}${folderId}`;
+}
+
+export function parseFolderHeaderMarker(marker: SidebarListMarker): string | null {
+  return marker.startsWith(FOLDER_HEADER_MARKER_PREFIX)
+    ? marker.slice(FOLDER_HEADER_MARKER_PREFIX.length)
+    : null;
+}
+
+export interface SidebarFolderGroup<T> {
+  readonly folder: SidebarThreadFolder;
+  readonly threads: readonly T[];
+}
+
+export function groupSidebarThreadsIntoFolders<
+  T extends { readonly environmentId: string; readonly id: string },
+>(input: {
+  readonly folders: readonly SidebarThreadFolder[];
+  /** Active threads in display (server manual) order. */
+  readonly activeThreads: readonly T[];
+}): {
+  readonly folderGroups: readonly SidebarFolderGroup<T>[];
+  readonly unfolderedActiveThreads: readonly T[];
+} {
+  const threadsByFolderId = new Map<string, T[]>(
+    input.folders.map((folder) => [folder.id, [] as T[]]),
+  );
+  const unfolderedActiveThreads: T[] = [];
+  for (const thread of input.activeThreads) {
+    const folderId = findThreadFolderId(input.folders, `${thread.environmentId}:${thread.id}`);
+    if (folderId !== null) {
+      threadsByFolderId.get(folderId)?.push(thread);
+    } else {
+      unfolderedActiveThreads.push(thread);
+    }
+  }
+  return {
+    folderGroups: input.folders.map((folder) => ({
+      folder,
+      threads: threadsByFolderId.get(folder.id) ?? [],
+    })),
+    unfolderedActiveThreads,
+  };
+}
+
+/** The folder a dropped active row lands in: the header it is dropped on,
+    else the nearest folder header above its slot; null past the unfiled
+    divider or above every folder. Mirrors resolveSidebarDropTarget's
+    arrayMove so the preview and the commit agree. */
+export function resolveSidebarDropFolder(
+  items: readonly SidebarListItem[],
+  activeKey: string,
+  overId: string,
+): string | null {
+  const activeIndex = items.findIndex((item) => sidebarListItemId(item) === activeKey);
+  const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
+  if (activeIndex === -1 || overIndex === -1) return null;
+  const overItem = items[overIndex]!;
+  if (overItem.kind === "marker") {
+    const onHeader = parseFolderHeaderMarker(overItem.marker);
+    if (onHeader !== null) return onHeader;
+  }
+  const moved = items.filter((_, index) => index !== activeIndex);
+  moved.splice(overIndex, 0, items[activeIndex]!);
+  for (let index = overIndex - 1; index >= 0; index -= 1) {
+    const item = moved[index]!;
+    if (item.kind !== "marker") continue;
+    const folderId = parseFolderHeaderMarker(item.marker);
+    if (folderId !== null) return folderId;
+    return null;
+  }
+  return null;
+}
+
+export const THREAD_FOLDER_MENU_ID_PREFIX = "folder:";
+
+/** Insert a "Move to folder" submenu into the per-thread action menu, above Rename. */
+export function withThreadFolderMenuItems(
+  items: ReadonlyArray<ContextMenuItem<string>>,
+  input: { readonly folders: readonly SidebarThreadFolder[]; readonly threadKey: string },
+): ContextMenuItem<string>[] {
+  const currentFolderId = findThreadFolderId(input.folders, input.threadKey);
+  const folderItem: ContextMenuItem<string> = {
+    id: "folder",
+    label: currentFolderId === null ? "Move to folder" : "Folder",
+    icon: "folder",
+    separatorBefore: true,
+    children: [
+      ...input.folders.map((folder) => ({
+        id: `${THREAD_FOLDER_MENU_ID_PREFIX}${folder.id}`,
+        label: folder.id === currentFolderId ? `\u2713 ${folder.name}` : folder.name,
+        icon: "folder",
+        disabled: folder.id === currentFolderId,
+      })),
+      {
+        id: `${THREAD_FOLDER_MENU_ID_PREFIX}new`,
+        label: "New folder\u2026",
+        icon: "folder-plus",
+        separatorBefore: input.folders.length > 0,
+      },
+      ...(currentFolderId === null
+        ? []
+        : [
+            {
+              id: `${THREAD_FOLDER_MENU_ID_PREFIX}remove`,
+              label: "Remove from folder",
+              icon: "folder-minus",
+              separatorBefore: true,
+            },
+          ]),
+    ],
+  };
+  const next = [...items];
+  const renameIndex = next.findIndex((item) => item.id === "rename");
+  next.splice(renameIndex < 0 ? next.length : renameIndex, 0, folderItem);
+  return next;
 }
