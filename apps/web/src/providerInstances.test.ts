@@ -10,6 +10,9 @@ import {
   resolveDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
+  resolveProviderInstanceBrand,
+  shouldShowInstanceBadge,
+  type ProviderInstanceEntry,
 } from "./providerInstances";
 
 function provider(input: {
@@ -578,5 +581,48 @@ describe("resolveDefaultProviderModelSelection", () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+describe("provider instance brands and badges", () => {
+  const entry = (id: string, driver: string, displayName: string, accentColor?: string) =>
+    ({
+      instanceId: ProviderInstanceId.make(id),
+      driverKind: ProviderDriverKind.make(driver),
+      displayName,
+      accentColor,
+      enabled: true,
+      installed: true,
+      status: "ready",
+      isDefault: false,
+      isAvailable: true,
+      snapshot: {} as ProviderInstanceEntry["snapshot"],
+      models: [],
+    }) as unknown as ProviderInstanceEntry;
+
+  it("resolves the Z.ai brand from common display names only", () => {
+    for (const name of ["GLM", "glm-5.3", "Z.ai", "zai coding", "Zhipu", "Claude (GLM)"]) {
+      expect(resolveProviderInstanceBrand(name)).toBe("zai");
+    }
+    for (const name of ["Claude", "Claude Work", "Glimmer", "OpenAI", "zaibatsu"]) {
+      expect(resolveProviderInstanceBrand(name)).toBeNull();
+    }
+  });
+
+  it("hides the badge when instances of one driver render different glyphs", () => {
+    const claude = entry("claudeAgent", "claudeAgent", "Claude");
+    const glm = entry("claudeAgent_glm", "claudeAgent", "GLM", "#dc2626");
+    expect(shouldShowInstanceBadge(claude, [claude, glm])).toBe(false);
+    expect(shouldShowInstanceBadge(glm, [claude, glm])).toBe(false);
+  });
+
+  it("shows the badge when two instances would look the same", () => {
+    const work = entry("claudeAgent", "claudeAgent", "Claude Work");
+    const personal = entry("claudeAgent_personal", "claudeAgent", "Claude Personal");
+    const glm = entry("claudeAgent_glm", "claudeAgent", "GLM");
+    expect(shouldShowInstanceBadge(work, [work, personal, glm])).toBe(true);
+    expect(shouldShowInstanceBadge(personal, [work, personal, glm])).toBe(true);
+    expect(shouldShowInstanceBadge(glm, [work, personal, glm])).toBe(false);
+    expect(shouldShowInstanceBadge(work, [work])).toBe(false);
   });
 });

@@ -27,10 +27,9 @@ import {
 import {
   normalizeProviderAccentColor,
   resolveProviderInstanceDisplayName,
-  shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
-export { normalizeProviderAccentColor, shouldShowInstanceBadge };
+export { normalizeProviderAccentColor };
 
 /**
  * Local-only placeholder used while a draft has no provider it can safely
@@ -48,6 +47,32 @@ export const NO_PROVIDER_MODEL_SELECTION: ModelSelection = {
  * hoist here, plus the precomputed `instanceId` / `driverKind` /
  * `displayName` used by every picker and settings view.
  */
+/**
+ * Brands a provider instance can visually stand in for when the driver is a
+ * generic harness pointed at another vendor (fork feature). Resolved from the
+ * instance's display name so no server or contract change is needed.
+ */
+export type ProviderInstanceBrand = "zai";
+
+const BRAND_NAME_PATTERNS: ReadonlyArray<readonly [ProviderInstanceBrand, RegExp]> = [
+  ["zai", /(^|[^a-z])(z\.?ai|zhipu|glm)([^a-z]|$)/i],
+];
+
+export function resolveProviderInstanceBrand(displayName: string): ProviderInstanceBrand | null {
+  for (const [brand, pattern] of BRAND_NAME_PATTERNS) {
+    if (pattern.test(displayName)) return brand;
+  }
+  return null;
+}
+
+/** What the instance's glyph looks like: its brand when it has one, else the driver's icon. */
+export function providerInstanceIconIdentity(entry: {
+  readonly driverKind: ProviderDriverKind;
+  readonly displayName: string;
+}): string {
+  return resolveProviderInstanceBrand(entry.displayName) ?? `driver:${entry.driverKind}`;
+}
+
 export interface ProviderInstanceEntry {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -82,6 +107,26 @@ export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boo
 /** Picker rails contain configured, enabled instances only. */
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
   return entry.enabled;
+}
+
+/**
+ * Show the initials badge only when another configured instance would render
+ * the same glyph, so the icon alone cannot tell them apart. A branded
+ * instance (e.g. a Claude instance pointed at Z.ai) has its own glyph and
+ * needs no badge; neither does the lone default it sits next to.
+ */
+export function shouldShowInstanceBadge(
+  entry: ProviderInstanceEntry,
+  entries: Iterable<ProviderInstanceEntry>,
+): boolean {
+  const identity = providerInstanceIconIdentity(entry);
+  let sharedIdentityCount = 0;
+  for (const candidate of entries) {
+    if (providerInstanceIconIdentity(candidate) === identity && ++sharedIdentityCount > 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

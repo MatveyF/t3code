@@ -7,7 +7,9 @@ import {
   Icon,
   OpenAI,
   OpenCodeIcon,
+  ZaiIcon,
 } from "../Icons";
+import { type ProviderInstanceBrand, resolveProviderInstanceBrand } from "../../providerInstances";
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("codex")]: OpenAI,
@@ -17,6 +19,25 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
 };
+
+export const PROVIDER_ICON_BY_BRAND: Record<ProviderInstanceBrand, Icon> = {
+  zai: ZaiIcon,
+};
+
+/**
+ * Glyph for a provider instance. A branded instance (by display name) shows
+ * the vendor it actually talks to, e.g. a Claude Code instance pointed at
+ * Z.ai shows the Z.ai mark; otherwise the driver's icon.
+ */
+export function resolveProviderInstanceIcon(
+  driverKind: ProviderDriverKind,
+  displayName: string,
+): Icon | null {
+  const brand = resolveProviderInstanceBrand(displayName);
+  return (
+    (brand ? PROVIDER_ICON_BY_BRAND[brand] : null) ?? PROVIDER_ICON_BY_PROVIDER[driverKind] ?? null
+  );
+}
 
 export type ModelEsque = {
   slug: string;

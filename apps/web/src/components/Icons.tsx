@@ -768,3 +768,13 @@ export const PiAgentIcon: Icon = ({ className, ...props }) => (
     <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
   </svg>
 );
+
+// Z.ai (Zhipu) brand mark: rounded square with a slanted Z. Drawn by hand from
+// the official logo so it follows the theme (foreground square, background Z)
+// instead of shipping the 11 KB Illustrator export.
+export const ZaiIcon: Icon = ({ className, ...props }) => (
+  <svg {...props} viewBox="0 0 30 30" className={cn("fill-foreground", className)}>
+    <rect x="1" y="1" width="28" height="28" rx="6.5" />
+    <path className="fill-background" d="M9.5 6.8h12.2l-8.1 14.4h6.9v2h-12.2l8.1-14.4h-6.9z" />
+  </svg>
+);
