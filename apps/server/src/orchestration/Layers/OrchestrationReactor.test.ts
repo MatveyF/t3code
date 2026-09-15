@@ -10,6 +10,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
+import * as ThreadTitleAutoRefreshReactor from "../ThreadTitleAutoRefreshReactor.ts";
 import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
@@ -54,6 +55,15 @@ describe("OrchestrationReactor", () => {
           Layer.succeed(ProviderCommandReactor, {
             start: () => {
               started.push("provider-command-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(ThreadTitleAutoRefreshReactor.ThreadTitleAutoRefreshReactor, {
+            start: () => {
+              started.push("thread-title-auto-refresh-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -124,6 +134,7 @@ describe("OrchestrationReactor", () => {
     expect(started).toEqual([
       "provider-runtime-ingestion",
       "provider-command-reactor",
+      "thread-title-auto-refresh-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "thread-pull-request-reactor",
