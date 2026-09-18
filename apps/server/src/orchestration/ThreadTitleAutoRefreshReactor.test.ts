@@ -5,6 +5,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   ThreadId,
+  ThreadMetaUpdatedPayload,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -12,6 +13,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -33,6 +35,8 @@ import {
 } from "./ThreadTitleAutoRefreshReactor.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+
+const encodeMetaUpdatedPayload = Schema.encodeSync(Schema.fromJsonString(ThreadMetaUpdatedPayload));
 
 const testCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size).fill(1),
@@ -171,7 +175,7 @@ const runTurnStart = (input: {
            command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json)
         VALUES (${`${threadId}:title-${index}`}, 'thread', ${threadId}, ${index + 1},
           'thread.meta-updated', ${NOW}, ${commandId}, NULL, NULL, 'server',
-          ${JSON.stringify({ threadId, title: `Title ${index}` })}, '{}')
+          ${encodeMetaUpdatedPayload({ threadId, title: `Title ${index}`, updatedAt: NOW })}, '{}')
       `;
     }
 
