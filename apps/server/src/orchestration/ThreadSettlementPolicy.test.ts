@@ -205,6 +205,18 @@ describe("resolveAutoSettlementAt", () => {
     ).toBe(false);
   });
 
+  it("never auto-settles a pinned thread (fork)", () => {
+    // Inactive well past the window, and a merged pull request, still pinned.
+    expect(decide(makeThread({ pinnedAt: "2026-08-20T00:00:00.000Z" }))).toBe(false);
+    expect(
+      decide(makeThread({ pinnedAt: "2026-08-20T00:00:00.000Z" }), {
+        state: "merged",
+        mergedAt: "2026-08-27T00:00:00.000Z",
+      }),
+    ).toBe(false);
+    expect(decide(makeThread({ pinnedAt: null }))).toBe(true);
+  });
+
   it("allows a fresh completion to wake snooze before settlement", () => {
     expect(
       decide(
