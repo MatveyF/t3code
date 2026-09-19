@@ -117,6 +117,9 @@ export function resolveAutoSettlementAt(input: {
 /** Cheap checks that run before any source control lookup. */
 export function isAutoSettlementCandidate(thread: OrchestrationThreadShell, now: string): boolean {
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
+  // Fork feature: a pin is a deliberate "keep this in front of me", and
+  // settling would also unpin it. Only a manual settle moves a pinned thread.
+  if (thread.pinnedAt != null) return false;
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
   if (thread.session?.status === "starting" || thread.session?.status === "running") return false;
   if (thread.backgroundLiveness != null) return false;
